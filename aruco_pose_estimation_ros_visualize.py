@@ -14,40 +14,6 @@ from datetime import datetime
 import tf.transformations as tf
 import serial
 
-### ---------- Inspire Hand Setup ----------
-regdict = {
-    'angleSet': 1486,
-    'speedSet': 1522,
-    'forceSet': 1498
-}
-
-def open_serial(port='/dev/ttyUSB0', baudrate=115200):
-    ser = serial.Serial()
-    ser.port = port
-    ser.baudrate = baudrate
-    ser.timeout = 1
-    ser.open()
-    return ser
-
-def write_register(ser, id, add, num, val):
-    bytes_out = [0xEB, 0x90, id, num + 3, 0x12, add & 0xFF, (add >> 8) & 0xFF]
-    for i in range(num):
-        bytes_out.append(val[i])
-    checksum = sum(bytes_out[2:]) & 0xFF
-    bytes_out.append(checksum)
-    ser.write(bytearray(bytes_out))
-    time.sleep(0.01)
-    ser.read_all()
-
-def write6(ser, id, param, val):
-    if param in ['angleSet', 'forceSet', 'speedSet']:
-        val_reg = []
-        for i in range(6):
-            val_reg.append(val[i] & 0xFF)
-            val_reg.append((val[i] >> 8) & 0xFF)
-        write_register(ser, id, regdict[param], 12, val_reg)
-    else:
-        print("[Hand] Invalid param for write6.")
 
 ### ---------- Controller ----------
 class ArmKeyboardControl:
@@ -57,7 +23,6 @@ class ArmKeyboardControl:
         self.lock = threading.Lock()
         self.current_pose = None
         self.recorded_data = []
-        self.current_hand = [1000] * 6
         self.aruco_img = None
         self.detecting = False
         self.latest_tvec = None
@@ -65,21 +30,11 @@ class ArmKeyboardControl:
 
         if arm_choice == '1':
             self.arm = 'left'
-            serial_port = '/dev/ttyUSB0'
-            self.hand_id = 1
-            baudrate_in = 57600
         elif arm_choice == '2':
             self.arm = 'right'
-            serial_port = '/dev/ttyUSB0'
-            self.hand_id = 2
-            baudrate_in = 115200
         else:
             rospy.logerr("Invalid input. Use '1' or '2'")
             exit()
-
-        self.ser = open_serial(serial_port, baudrate_in)
-        write6(self.ser, self.hand_id, 'speedSet', [800] * 6)
-        write6(self.ser, self.hand_id, 'forceSet', [500] * 6)
 
         self.pose_topic = f'/relaxed_ik/motion_control/pose_ee_arm_{self.arm}'
         self.target_topic = f'/motion_target/target_pose_arm_{self.arm}'
@@ -88,28 +43,18 @@ class ArmKeyboardControl:
         rospy.Subscriber("/zedm/zed_node/left/image_rect_color/compressed", CompressedImage, self.image_callback)
 
         self.pub = rospy.Publisher(self.target_topic, PoseStamped, queue_size=1)
-        # zed
-        # self.camera_matrix = np.array([[528.4206, 0.0, 635.5908],
-        #                                [0.0, 528.4206, 359.7711],
-        #                                [0.0, 0.0, 1.0]])
 
         # zedmini
         self.camera_matrix = np.array([[730.2571411132812, 0.0, 637.2598876953125],
                                        [0.0, 730.2571411132812, 346.41082763671875],
                                        [0.0, 0.0, 1.0]])
-        # self.camera_matrix = np.array([[365.1285705566406, 0.0, 318.62994384765625],
-        #                        [0.0, 365.1285705566406, 173.20541381835938],
-        #                        [0.0, 0.0, 1.0]])
-
 
 
         self.dist_coeffs = np.zeros((5, 1))
-        self.marker_length = 0.05
+        self.marker_length = 0.04
         self.target_id = 23
-        self.aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
+        self.aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_5X5_50)
         self.aruco_params = aruco.DetectorParameters_create()
-        # self.aruco_params = aruco.DetectorParameters()
-
 
 
         self.camera_cali_dir = "camera_cali"
@@ -159,9 +104,6 @@ class ArmKeyboardControl:
         except Exception as e:
             rospy.logerr(f"Aruco detection failed: {e}")
 
-    def send_hand(self, values):
-        write6(self.ser, self.hand_id, 'angleSet', values)
-
     def run(self):
         rospy.sleep(1.0)
         print(f"[{self.arm}] Controls:")
@@ -182,18 +124,6 @@ class ArmKeyboardControl:
             elif key == 'f':
                 self.detecting = True
                 print("[INFO] Start detecting ArUco ID 23...")
-            elif key == '1':
-                self.current_hand = [1000] * 6
-                self.send_hand(self.current_hand)
-            elif key == '2':
-                self.current_hand = [800] * 6
-                self.send_hand(self.current_hand)
-            elif key == '3':
-                self.current_hand = [0, 0, 0, 0, 500, 1000]
-                self.send_hand(self.current_hand)
-            elif key == '4':
-                self.current_hand = [800, 800, 800, 800, 800, 0]
-                self.send_hand(self.current_hand)
             else:
                 self.update_pose_by_key(key)
 
