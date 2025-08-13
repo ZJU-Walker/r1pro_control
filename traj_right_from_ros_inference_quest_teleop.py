@@ -35,6 +35,7 @@ import tf
 import serial
 import time
 from sensor_msgs.msg import JointState
+import scipy.spatial.transform
 
 # ---------- Inspire Hand Register Definitions ----------
 regdict = {
@@ -165,44 +166,6 @@ class TrajFollow:
             rospy.sleep(0.1)
         return False
 
-    # def transform_and_send_command(self, cam_pos, cam_quat, hand_vals):
-    #     """Transform camera frame command to base frame and send to robot"""
-    #     # Transform position from camera frame to base frame
-    #     cam_pt = np.array([cam_pos[0], cam_pos[1], cam_pos[2], 1.0])
-    #     base_pt = self.T_cam_to_base.dot(cam_pt)
-        
-    #     # Transform orientation from camera frame to base frame
-    #     q_cam = np.array(cam_quat)  # [qx, qy, qz, qw]
-    #     q_base_hand = tf.transformations.quaternion_multiply(self.q_cam_to_base, q_cam)
-        
-    #     # Transform from hand frame to ee frame
-    #     q_base_ee = tf.transformations.quaternion_multiply(q_base_hand, self.q_hand_to_ee)
-        
-    #     # Build pose message
-    #     pose_msg = PoseStamped()
-    #     pose_msg.header.stamp = rospy.Time.now()
-    #     pose_msg.header.frame_id = 'base_link'
-        
-    #     # Set transformed position
-    #     pose_msg.pose.position.x = base_pt[0]
-    #     pose_msg.pose.position.y = base_pt[1]
-    #     pose_msg.pose.position.z = base_pt[2]
-        
-    #     # Set transformed orientation
-    #     pose_msg.pose.orientation.x = q_base_ee[0]
-    #     pose_msg.pose.orientation.y = q_base_ee[1]
-    #     pose_msg.pose.orientation.z = q_base_ee[2]
-    #     pose_msg.pose.orientation.w = q_base_ee[3]
-        
-    #     # Send commands to robot
-    #     self.pub.publish(pose_msg)
-    #     if self.ser:
-    #         write6(self.ser, self.hand_id, 'angleSet', hand_vals)
-            
-    #     rospy.loginfo(f"[{self.arm}] Sent: pos=({pose_msg.pose.position.x:.3f},"
-    #                   f" {pose_msg.pose.position.y:.3f}, {pose_msg.pose.position.z:.3f}) |"
-    #                   f" hand={hand_vals}")
-
     def transform_and_send_command(self, base_pos, base_quat, hand_vals):
         """Transform camera frame command to base frame and send to robot"""
 
@@ -233,42 +196,6 @@ class TrajFollow:
         rospy.loginfo(f"[{self.arm}] Sent: pos=({pose_msg.pose.position.x:.3f},"
                       f" {pose_msg.pose.position.y:.3f}, {pose_msg.pose.position.z:.3f}) |"
                       f" hand={hand_vals}")
-
-    def run_real_time_mode(self):
-        """Run real-time mode - follow commands from inference topic"""
-        rospy.loginfo(f"[{self.arm}] Starting REAL_TIME MODE - following /inference/right/command...")
-        
-        # Wait for current pose
-        if not self.wait_for_current_pose():
-            return
-            
-        # Set velocity limits
-        self.send_vel_limit([4,4,4,4,4,4],[4,4,4,4,4,4])
-        
-        rospy.loginfo("Ready to receive real-time commands!")
-        rospy.loginfo("Waiting for commands on /inference/right/command...")
-        
-        rate = rospy.Rate(20)  # 20 Hz control loop
-        
-        while not rospy.is_shutdown():
-            with self.lock:
-                if self.new_command_available and self.latest_command is not None:
-                    # Get the command
-                    command = self.latest_command
-                    self.new_command_available = False
-                    fixed_quat = [0.29, 0.73, -0.34, -0.498]
-                    
-                    # Transform and send the command
-                    self.transform_and_send_command(
-                        command['position'],
-                        # command['orientation'],
-                        fixed_quat,
-                        command['hand']
-                    )
-            
-            rate.sleep()
-        
-        rospy.loginfo(f"[{self.arm}] REAL_TIME MODE stopped")
 
     def load_trajectory_points(self, filepath):
         """Load trajectory points directly in base frame (EE poses from CSV)"""
@@ -343,58 +270,90 @@ class TrajFollow:
             
         # Calculate next orientation using SLERP (Spherical Linear Interpolation)
         next_ori = current_ori  # Default to current orientation
-        orientation_reached = True  # Default to true if no orientation interpolation
+        orientation_reached = False  # Default to true if no orientation interpolation
+        
+        # if current_ori is not None and target_ori is not None:
+        #     # Convert to numpy arrays for easier manipulation
+        #     q_current = np.array(current_ori)
+        #     q_target = np.array(target_ori)
+            
+        #     # Calculate quaternion difference/distance using dot product
+        #     dot_product = np.dot(q_current, q_target)
+            
+        #     # Handle quaternion double cover (q and -q represent same rotation)
+        #     if dot_product < 0:
+        #         q_target = -q_target
+        #         dot_product = -dot_product
+            
+        #     # Clamp dot product to avoid numerical issues
+        #     dot_product = np.clip(dot_product, -1.0, 1.0)
+            
+        #     # Calculate angular distance
+        #     theta = np.arccos(abs(dot_product))
+        #     print("[DEBUG] Angular distance (theta):", theta)
+            
+        #     # Define orientation threshold (in radians, ~5.7 degrees)
+        #     orientation_threshold = 0.1
+        #     orientation_reached = theta <= orientation_threshold
+            
+        #     # Calculate interpolation factor based on step size
+        #     # Use a fixed angular step size (in radians)
+        #     angular_step_size = 0.15  # ~8.6 degrees per step
+
+        #     if theta > orientation_threshold:
+        #         # Calculate interpolation factor
+        #         t = min(angular_step_size / theta, 1.0)
+                
+        #         # Perform SLERP
+        #         if theta > 1e-6:  # Avoid division by zero
+        #             sin_theta = np.sin(theta)
+        #             weight_current = np.sin((1.0 - t) * theta) / sin_theta
+        #             weight_target = np.sin(t * theta) / sin_theta
+        #             next_ori = weight_current * q_current + weight_target * q_target
+        #             # Normalize the result
+        #             next_ori = next_ori / np.linalg.norm(next_ori)
+        #             print("performing SLERP with t =", t)
+        #         else:
+        #             next_ori = q_target  # Quaternions are too close, just use target
+        #             print("next_ori is close to target, using target orientation directly 1")
+        #     else:
+        #         next_ori = q_target  # Close enough, use target orientation
+        #         print("Orientation already close enough, using target orientation directly 2")
         
         if current_ori is not None and target_ori is not None:
-            # Convert to numpy arrays for easier manipulation
-            q_current = np.array(current_ori)
-            q_target = np.array(target_ori)
-            
-            # Calculate quaternion difference/distance using dot product
-            dot_product = np.dot(q_current, q_target)
-            
-            # Handle quaternion double cover (q and -q represent same rotation)
-            if dot_product < 0:
-                q_target = -q_target
-                dot_product = -dot_product
-            
-            # Clamp dot product to avoid numerical issues
-            dot_product = np.clip(dot_product, -1.0, 1.0)
-            
-            # Calculate angular distance
-            theta = np.arccos(abs(dot_product))
-            
-            # Define orientation threshold (in radians, ~5.7 degrees)
-            orientation_threshold = 0.1
-            orientation_reached = theta <= orientation_threshold
-            
-            # Calculate interpolation factor based on step size
-            # Use a fixed angular step size (in radians)
-            angular_step_size = 0.15  # ~2.9 degrees per step
-            
-            if theta > orientation_threshold:
-                # Calculate interpolation factor
-                t = min(angular_step_size / theta, 1.0)
-                
-                # Perform SLERP
-                if theta > 1e-6:  # Avoid division by zero
-                    sin_theta = np.sin(theta)
-                    weight_current = np.sin((1.0 - t) * theta) / sin_theta
-                    weight_target = np.sin(t * theta) / sin_theta
-                    next_ori = weight_current * q_current + weight_target * q_target
-                    # Normalize the result
-                    next_ori = next_ori / np.linalg.norm(next_ori)
-                    next_ori = q_target
-                    print("performing SLERP with t =", t)
-                else:
-                    next_ori = q_target  # Quaternions are too close, just use target
-                    print("next_ori is close to target, using target orientation directly 1")
+            # Convert quaternions to scipy Rotation objects
+            R_current = scipy.spatial.transform.Rotation.from_quat(current_ori)
+            R_target = scipy.spatial.transform.Rotation.from_quat(target_ori)
+
+            # Compute relative rotation from current to target
+            R_relative = R_target * R_current.inv()
+
+            # Convert to axis-angle
+            # Get rotation vector (axis * angle)
+            rotvec = R_relative.as_rotvec()
+            angle = np.linalg.norm(rotvec)
+
+            print(f"[ANGLE] Total rotation angle: {angle:.4f} rad")
+
+            if angle < np.deg2rad(2.0):  # 2 degrees threshold
+                print("[ANGLE] angle is very small, using target orientation directly")
+                next_ori = target_ori
+                orientation_reached = True
             else:
-                next_ori = q_target  # Close enough, use target orientation
-                print("Orientation already close enough, using target orientation directly 2")
+                print("[ANGLE] angle is significant, calculating next orientation step")
+                step_angle = np.deg2rad(8.0)  # ~0.1396 rad
+                # orientation_reached = angle <= step_angle
+                orientation_threshold = np.deg2rad(2.0)  # 2° threshold
+                # orientation_reached = angle <= orientation_threshold
+                step_rotvec = rotvec * min(step_angle / angle, 1.0)
+                step_rotation = scipy.spatial.transform.Rotation.from_rotvec(step_rotvec)
+                R_next = step_rotation * R_current
+                next_ori = R_next.as_quat()
         
         # Target is reached when both position and orientation are close enough
         target_reached = position_reached and orientation_reached
+        print(f"[DEBUG] Position reached: {position_reached}, Orientation reached: {orientation_reached}")
+        print(f"[DEBUG] target_reached: {target_reached}")
         
         return next_pos, next_ori, target_reached
 
@@ -435,16 +394,17 @@ class TrajFollow:
         # Calculate next step for both position and orientation
         next_pos, next_ori, target_reached = self.calculate_step_toward_target(
             current_pos, target_pos, current_ori, target_ori)
-        print("current_ori:", current_ori)
-        print("next_ori:", next_ori)
-        print("target_ori:", target_ori)
+        print("target_reached:", target_reached)
+        # print("current_ori:", current_ori)
+        # print("next_ori:", next_ori)
+        # print("target_ori:", target_ori)
 
         # Calculate relative movement
         dx = next_pos[0] - current_pos[0]
         dy = next_pos[1] - current_pos[1] 
         dz = next_pos[2] - current_pos[2]
         
-        print(f"[DEBUG] Relative movement: dx={dx:.6f}, dy={dy:.6f}, dz={dz:.6f}")
+        # print(f"[DEBUG] Relative movement: dx={dx:.6f}, dy={dy:.6f}, dz={dz:.6f}")
 
         # Create pose message
         with self.lock:
@@ -500,6 +460,65 @@ class TrajFollow:
             print(f"Progress: pos_dist={pos_dist:.4f}m, ori_dist={angular_dist:.2f}°")
         
         return True
+    
+    def execute_rotate_step(self):
+        """Execute one rotation step only"""
+        if self.current_target_idx >= len(self.trajectory_points):
+            print("All trajectory points completed!")
+            return False
+
+        with self.lock:
+            if self.current_pose is None:
+                print("No current pose available!")
+                return True
+
+            current_pos = [
+                self.current_pose.pose.position.x,
+                self.current_pose.pose.position.y,
+                self.current_pose.pose.position.z
+            ]
+            current_ori = [
+                self.current_pose.pose.orientation.x,
+                self.current_pose.pose.orientation.y,
+                self.current_pose.pose.orientation.z,
+                self.current_pose.pose.orientation.w
+            ]
+
+        target_point = self.trajectory_points[self.current_target_idx]
+        target_ori = target_point['orientation']
+
+        # Keep position fixed, only rotate
+        next_pos = current_pos
+        _, next_ori, target_reached = self.calculate_step_toward_target(
+            current_pos, current_pos, current_ori, target_ori)
+
+
+        # Create pose message
+        new_pose = PoseStamped()
+        new_pose.header.stamp = rospy.Time.now()
+        new_pose.header.frame_id = "base_link"
+        new_pose.pose.position.x = current_pos[0]
+        new_pose.pose.position.y = current_pos[1]
+        new_pose.pose.position.z = current_pos[2]
+        new_pose.pose.orientation.x = next_ori[0]
+        new_pose.pose.orientation.y = next_ori[1]
+        new_pose.pose.orientation.z = next_ori[2]
+        new_pose.pose.orientation.w = next_ori[3]
+
+        self.pub.publish(new_pose)
+        rospy.sleep(0.1)
+
+        if self.ser:
+            write6(self.ser, self.hand_id, 'angleSet', target_point['hand'])
+
+        if target_reached:
+            print(f"✓ Point {self.current_target_idx + 1} rotation complete!")
+            self.current_target_idx += 1
+        else:
+            print("[INFO] Continuing rotation...")
+
+        return True
+
 
     def run_normal_mode(self):
         """Run normal trajectory following mode - just follow EE base frame CSV"""
@@ -579,6 +598,42 @@ class TrajFollow:
                 break
         
         rospy.loginfo(f"[{self.arm}] MOVE_STEP MODE complete")
+        
+    def run_real_time_mode(self):
+        """Run real-time mode - follow commands from inference topic"""
+        rospy.loginfo(f"[{self.arm}] Starting REAL_TIME MODE - following /inference/right/command...")
+        
+        # Wait for current pose
+        if not self.wait_for_current_pose():
+            return
+            
+        # Set velocity limits
+        self.send_vel_limit([4,4,4,4,4,4],[4,4,4,4,4,4])
+        
+        rospy.loginfo("Ready to receive real-time commands!")
+        rospy.loginfo("Waiting for commands on /inference/right/command...")
+        
+        rate = rospy.Rate(20)  # 20 Hz control loop
+        
+        while not rospy.is_shutdown():
+            with self.lock:
+                if self.new_command_available and self.latest_command is not None:
+                    # Get the command
+                    command = self.latest_command
+                    self.new_command_available = False
+                    fixed_quat = [0.29, 0.73, -0.34, -0.498]
+                    
+                    # Transform and send the command
+                    self.transform_and_send_command(
+                        command['position'],
+                        command['orientation'],
+                        # fixed_quat,
+                        command['hand']
+                    )
+            
+            rate.sleep()
+        
+        rospy.loginfo(f"[{self.arm}] REAL_TIME MODE stopped")
             
     def run_translation_mode(self):
         """Run translation-only trajectory playback, using current orientation"""
@@ -625,6 +680,56 @@ class TrajFollow:
 
         rospy.loginfo(f"[{self.arm}] TRANSLATION MODE complete.")
 
+    def run_rotate_test_mode(self):
+        """Run rotate-only mode with incremental orientation changes"""
+        rospy.loginfo(f"[{self.arm}] Starting ROTATE_TEST MODE - orientation only...")
+
+        # Load trajectory points
+        filepath = '/home/nvidia/ke/r1_pro_sdk_118/install/share/mobiman/scripts/right/right.csv'
+        if not os.path.exists(filepath):
+            rospy.logerr(f"Trajectory file not found: {filepath}")
+            return
+
+        self.trajectory_points = self.load_trajectory_points(filepath)
+        rospy.loginfo(f"Loaded {len(self.trajectory_points)} trajectory points")
+
+        # Wait for current pose
+        if not self.wait_for_current_pose():
+            return
+
+        rospy.loginfo("Ready for incremental rotation only!")
+        rospy.loginfo("Press '1' + Enter to rotate toward current target")
+        rospy.loginfo("Press 'q' + Enter to quit")
+        rospy.loginfo("NOTE: Only orientation will change. Position remains fixed.")
+
+        self.send_vel_limit([4, 4, 4, 4, 4, 4], [4, 4, 4, 4, 4, 4])
+
+        while not rospy.is_shutdown():
+            try:
+                if self.current_target_idx >= len(self.trajectory_points):
+                    print("All trajectory points completed!")
+                    break
+
+                current_target = self.current_target_idx + 1
+                total_targets = len(self.trajectory_points)
+                print(f"\n[TARGET {current_target}/{total_targets}] Press '1' to rotate toward target, 'q' to quit: ", end='')
+
+                user_input = input().strip()
+                if user_input == '1':
+                    if not self.execute_rotate_step():
+                        break
+                elif user_input.lower() == 'q':
+                    print("Quitting rotate_test mode...")
+                    break
+                else:
+                    print("Invalid input. Press '1' to rotate or 'q' to quit.")
+
+            except KeyboardInterrupt:
+                print("\nQuitting rotate_test mode...")
+                break
+
+        rospy.loginfo(f"[{self.arm}] ROTATE_TEST MODE complete")
+
 
     def run(self):
         if self.mode == 'move_step':
@@ -633,8 +738,11 @@ class TrajFollow:
             self.run_real_time_mode()
         elif self.mode == 'translation':
             self.run_translation_mode()
+        elif self.mode == 'rotate_test':
+            self.run_rotate_test_mode()
         else:
             self.run_normal_mode()
+
 
 
 if __name__ == '__main__':
@@ -647,19 +755,20 @@ if __name__ == '__main__':
             if sys.argv[1] == '--move_step':
                 mode = 'move_step'
                 print("=== RUNNING IN MOVE_STEP MODE ===")
-                ...
             elif sys.argv[1] == '--real_time':
                 mode = 'real_time'
                 print("=== RUNNING IN REAL_TIME MODE ===")
-                ...
             elif sys.argv[1] == '--translation':
                 mode = 'translation'
                 print("=== RUNNING IN TRANSLATION MODE ===")
-                print("Will follow position trajectory from CSV")
-                print("Rotation will be fixed to the current EE orientation")
+            elif sys.argv[1] == '--rotate_test':
+                mode = 'rotate_test'
+                print("=== RUNNING IN ROTATE_TEST MODE ===")
+                print("Will perform orientation-only trajectory following.")
                 print("=" * 50)
             elif sys.argv[1] == '--normal':
                 mode = 'normal'
+
 
         
         TrajFollow(mode=mode).run()
