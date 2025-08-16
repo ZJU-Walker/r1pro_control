@@ -3,9 +3,13 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import CompressedImage
+from rclpy.qos import qos_profile_sensor_data
 import threading
 import time
-import readchar
+import select
+import sys
+import termios
+import tty
 import os
 import csv
 import numpy as np
@@ -29,6 +33,13 @@ class ArmKeyboardControl(Node):
         self.latest_tvec = None
         self.latest_rvec = None
         self.message_received = False
+        
+        # Frame rate tracking
+        self.last_frame_time = time.time()
+        self.fps = 0.0
+        self.frame_count = 0
+        self.fps_update_time = time.time()
+        self.image_resolution = (0, 0)
 
         if arm_choice == '1':
             self.arm = 'left'
@@ -50,9 +61,9 @@ class ArmKeyboardControl(Node):
         
         self.image_sub = self.create_subscription(
             CompressedImage,
-            "/zedm/zed_node/left/image_rect_color/compressed",
+            "/hdas/camera_head/left/image_rect_color/compressed",
             self.image_callback,
-            10)
+            qos_profile_sensor_data)
         # Alternative: "/zedm/zed_node/left_raw/image_raw_color/compressed"
 
         # Create publisher
@@ -81,6 +92,7 @@ class ArmKeyboardControl(Node):
         self.wait_for_first_message()
         time.sleep(0.5)
         self.get_logger().info("EE pose received.")
+        cv2.namedWindow("Aruco Detection + EE", cv2.WINDOW_NORMAL)
 
     def wait_for_first_message(self, timeout=10.0):
         """Wait for first pose message with timeout"""
@@ -103,6 +115,17 @@ class ArmKeyboardControl(Node):
             img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
             if img is None:
                 return
+            
+            # Update resolution and frame rate
+            self.image_resolution = (img.shape[1], img.shape[0])  # (width, height)
+            self.frame_count += 1
+            current_time = time.time()
+            
+            # Calculate FPS every second
+            if current_time - self.fps_update_time > 1.0:
+                self.fps = self.frame_count / (current_time - self.fps_update_time)
+                self.frame_count = 0
+                self.fps_update_time = current_time
 
             # ArUco detection
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -155,6 +178,17 @@ class ArmKeyboardControl(Node):
                         cv2.circle(img_with_detections, (u, v), 8, (0, 0, 255), -1)
                         cv2.putText(img_with_detections, "EE", (u + 10, v - 10),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            
+            # Display FPS and resolution
+            info_text = f"FPS: {self.fps:.1f} | Resolution: {self.image_resolution[0]}x{self.image_resolution[1]}"
+            cv2.putText(img_with_detections, info_text, (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            
+            # Display ArUco detection status
+            if ids is not None:
+                detection_text = f"ArUco detected: {len(ids)} marker(s)"
+                cv2.putText(img_with_detections, detection_text, (10, 60),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
 
             cv2.imshow("Aruco Detection + EE", img_with_detections)
             cv2.waitKey(1)
@@ -187,21 +221,32 @@ class ArmKeyboardControl(Node):
         print("  f - detect ArUco & record")
         print("  n - save and quit")
 
-        while rclpy.ok():
-            key = readchar.readkey()
-            if key == 'n':
-                self.save_recorded_data()
-                break
-            elif key == 'r':
-                self.print_and_record()
-            elif key == 'f':
-                self.detecting = True
-                print("[INFO] Start detecting ArUco ID 23...")
-            else:
-                self.update_pose_by_key(key)
-            
-            # Process callbacks
-            rclpy.spin_once(self, timeout_sec=0.01)
+        # Setup non-blocking keyboard input
+        old_settings = termios.tcgetattr(sys.stdin)
+        tty.setcbreak(sys.stdin.fileno())
+
+        try:
+            while rclpy.ok():
+                # Check for keyboard input (non-blocking)
+                if select.select([sys.stdin], [], [], 0.001)[0]:
+                    key = sys.stdin.read(1)
+                    if key == 'n':
+                        self.save_recorded_data()
+                        break
+                    elif key == 'r':
+                        self.print_and_record()
+                    elif key == 'f':
+                        self.detecting = True
+                        print("[INFO] Start detecting ArUco ID 23...")
+                    else:
+                        self.update_pose_by_key(key)
+                
+                # Process callbacks and update display
+                rclpy.spin_once(self, timeout_sec=0.001)
+                cv2.waitKey(1)
+        finally:
+            # Restore terminal settings
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
 
     def update_pose_by_key(self, key):
         with self.lock:
