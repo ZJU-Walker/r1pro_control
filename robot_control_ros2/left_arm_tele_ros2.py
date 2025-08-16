@@ -8,6 +8,16 @@ The input trajectory is wrist position and orientation in camera frame.
 Transformation pipeline: Camera Frame → Base Frame → EE Frame
 - First: Transform camera frame to robot base frame (position + orientation)
 - Then: Transform hand frame to end-effector frame (orientation only, same origin)
+
+Usage: press 's' to start the program, 'f' to stop it.
+Modes:
+- normal: Full trajectory playback from CSV
+- move_step: Incremental movement toward trajectory points
+- translation: Position-only movement with fixed orientation
+- translation_smooth: Automatic smooth translation with fixed orientation
+- ros_tele: Real-time teleop control via ROS topics
+- ori: Test mode for setting fixed position/orientation without movement
+- print: Print current pose without sending commands
 '''
 
 import rclpy
@@ -21,6 +31,9 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 import time
 import sys
+import select
+import termios
+import tty
 
 class TrajFollow(Node):
     def __init__(self, mode='normal'):
@@ -29,6 +42,11 @@ class TrajFollow(Node):
         self.lock = threading.Lock()
         self.current_pose = None
         self.message_received = False
+        
+        # Program control flags
+        self.program_running = False
+        self.program_stopped = False
+        self.keyboard_thread = None
         
         # Arm configuration - LEFT ARM
         self.arm = 'left'
@@ -49,6 +67,9 @@ class TrajFollow(Node):
         self.setup_move_step_variables()
         
         self.get_logger().info(f"TrajFollow node initialized in {mode.upper()} mode for LEFT arm")
+        
+        # Start keyboard listener thread
+        self.start_keyboard_listener()
     
     def create_core_publishers_subscribers(self):
         """Create core publishers and subscribers needed for all modes"""
@@ -119,9 +140,58 @@ class TrajFollow(Node):
         ])
         # Combined transformation
         self.R_hand_to_ee = np.dot(self.R_hand_y_180, self.R_hand_z_90)
-        
+        self.R_ee_last = np.array([
+            [-1, 0, 0],
+            [0, -1, 0],
+            [0, 0, 1]
+        ])
+        self.R_hand_to_ee = np.dot(self.R_hand_to_ee, self.R_ee_last)
         # Convert to quaternion
         self.q_hand_to_ee = R.from_matrix(self.R_hand_to_ee).as_quat()
+    
+    def start_keyboard_listener(self):
+        """Start a thread to listen for keyboard input"""
+        self.keyboard_thread = threading.Thread(target=self.keyboard_listener, daemon=True)
+        self.keyboard_thread.start()
+    
+    def keyboard_listener(self):
+        """Listen for 's' to start and 'f' to stop the program"""
+        # Save terminal settings
+        old_settings = termios.tcgetattr(sys.stdin)
+        try:
+            # Set terminal to raw mode for immediate key detection
+            tty.setraw(sys.stdin.fileno())
+            
+            while not self.program_stopped:
+                # Check if input is available
+                if select.select([sys.stdin], [], [], 0.1)[0]:
+                    key = sys.stdin.read(1).lower()
+                    
+                    if key == 's' and not self.program_running:
+                        self.program_running = True
+                        print(f"[CONTROL] Program STARTED - press 'f' to stop")
+                    elif key == 'f':
+                        self.program_running = False
+                        self.program_stopped = True
+                        print(f"[CONTROL] Program STOPPED")
+                        break
+                    elif key == '\x03':  # Ctrl+C
+                        self.program_running = False
+                        self.program_stopped = True
+                        break
+        finally:
+            # Restore terminal settings
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+    
+    def wait_for_start(self):
+        """Wait for user to press 's' to start the program"""
+        self.get_logger().info("[CONTROL] Press 's' to START the program, 'f' to STOP at any time")
+        
+        while not self.program_running and not self.program_stopped:
+            time.sleep(0.1)
+            rclpy.spin_once(self, timeout_sec=0.01)
+        
+        return not self.program_stopped
     
     def setup_move_step_variables(self):
         """Setup variables for move_step and translation modes"""
@@ -468,11 +538,15 @@ class TrajFollow(Node):
     # ============= Mode Execution Methods =============
     def run_normal_mode(self):
         """Standard CSV trajectory playback"""
+        # Wait for start signal
+        if not self.wait_for_start():
+            return
+        
         self.get_logger().info(f"[{self.arm}] Starting NORMAL MODE - full trajectory playback...")
-        self.send_vel_limit([4,4,4,4,4,4], [4,4,4,4,4,4])
+        # self.send_vel_limit([4,4,4,4,4,4], [4,4,4,4,4,4])
         
         # Use left arm trajectory file
-        filepath = '/home/nvidia/ke/r1_pro_sdk_118/install/share/mobiman/scripts/left/left.csv'
+        filepath = '/home/irislab/r1pro_control/robot_control_ros2/recorded_trajectories/left_wrist_20250815_144818.csv'
         if not os.path.exists(filepath):
             self.get_logger().error(f"Trajectory file not found: {filepath}")
             return
@@ -481,6 +555,10 @@ class TrajFollow(Node):
         self.get_logger().info(f"Loaded {len(trajectory_points)} trajectory points")
         
         for idx, point in enumerate(trajectory_points, start=1):
+            # Check if program should stop
+            if not self.program_running or self.program_stopped:
+                self.get_logger().info("Program stopped by user")
+                break
             pose_msg = PoseStamped()
             pose_msg.header.stamp = self.get_clock().now().to_msg()
             pose_msg.header.frame_id = 'base_link'
@@ -497,7 +575,7 @@ class TrajFollow(Node):
             self.pub.publish(pose_msg)
             
             self.get_logger().info(f"[{idx}] Sent pose")
-            time.sleep(0.05)  # 20Hz
+            time.sleep(0.2)  # 20Hz
             
             # Spin once to handle callbacks
             rclpy.spin_once(self, timeout_sec=0.01)
@@ -506,10 +584,14 @@ class TrajFollow(Node):
     
     def run_move_step_mode(self):
         """Incremental movement mode"""
+        # Wait for start signal
+        if not self.wait_for_start():
+            return
+        
         self.get_logger().info(f"[{self.arm}] Starting MOVE_STEP MODE - incremental movement...")
         
         # Load trajectory for left arm
-        filepath = '/home/nvidia/ke/r1_pro_sdk_118/install/share/mobiman/scripts/left/left.csv'
+        filepath = '/home/irislab/r1pro_control/robot_control_ros2/recorded_trajectories/left_wrist_20250815_144818.csv'
         if not os.path.exists(filepath):
             self.get_logger().error(f"Trajectory file not found: {filepath}")
             return
@@ -525,10 +607,10 @@ class TrajFollow(Node):
         self.get_logger().info("Press '1' + Enter to take one step toward current target")
         self.get_logger().info("Press 'q' + Enter to quit")
         
-        self.send_vel_limit([4,4,4,4,4,4], [4,4,4,4,4,4])
+        # self.send_vel_limit([4,4,4,4,4,4], [4,4,4,4,4,4])
         
         # Manual step execution loop
-        while rclpy.ok():
+        while rclpy.ok() and self.program_running and not self.program_stopped:
             try:
                 if self.current_target_idx >= len(self.trajectory_points):
                     print("All trajectory points completed!")
@@ -559,6 +641,10 @@ class TrajFollow(Node):
     
     def run_translation_mode(self):
         """Position only movement with fixed orientation"""
+        # Wait for start signal
+        if not self.wait_for_start():
+            return
+        
         self.get_logger().info(f"[{self.arm}] Starting TRANSLATION MODE - fixed orientation...")
         
         # Wait for current pose to set fixed orientation
@@ -566,7 +652,7 @@ class TrajFollow(Node):
             return
         
         # Load trajectory for left arm
-        filepath = '/home/nvidia/ke/r1_pro_sdk/install/share/mobiman/script/left/robot_commands_left_hand_translate.csv'
+        filepath = '/home/irislab/r1pro_control/robot_control_ros2/recorded_trajectories/left_wrist_20250815_144818.csv'
         if not os.path.exists(filepath):
             self.get_logger().error(f"Trajectory file not found: {filepath}")
             return
@@ -580,7 +666,7 @@ class TrajFollow(Node):
         
         self.send_vel_limit([4,4,4,4,4,4], [4,4,4,4,4,4])
         
-        while rclpy.ok():
+        while rclpy.ok() and self.program_running and not self.program_stopped:
             try:
                 if self.current_target_idx >= len(self.trajectory_points):
                     print("All trajectory points completed!")
@@ -610,6 +696,10 @@ class TrajFollow(Node):
     
     def run_translation_smooth_mode(self):
         """Automatic smooth translation with fixed orientation"""
+        # Wait for start signal
+        if not self.wait_for_start():
+            return
+        
         self.get_logger().info(f"[{self.arm}] Starting TRANSLATION_SMOOTH MODE...")
         
         # Wait for current pose to set fixed orientation
@@ -617,7 +707,7 @@ class TrajFollow(Node):
             return
         
         # Load trajectory for left arm
-        filepath = '/home/nvidia/ke/r1_pro_sdk/install/share/mobiman/script/left/robot_commands_left_hand_translate.csv'
+        filepath = '/home/irislab/r1pro_control/robot_control_ros2/recorded_trajectories/left_wrist_20250815_144818.csv'
         if not os.path.exists(filepath):
             self.get_logger().error(f"Trajectory file not found: {filepath}")
             return
@@ -629,7 +719,7 @@ class TrajFollow(Node):
         self.send_vel_limit([4,4,4,4,4,4], [4,4,4,4,4,4])
         
         # Automatic smooth execution
-        while rclpy.ok() and self.current_target_idx < len(self.trajectory_points):
+        while rclpy.ok() and self.program_running and not self.program_stopped and self.current_target_idx < len(self.trajectory_points):
             if not self.execute_translation_step():
                 break
             time.sleep(0.1)  # 10Hz update rate
@@ -642,13 +732,17 @@ class TrajFollow(Node):
     
     def run_ros_tele_mode(self):
         """Real-time teleop control via ROS topics"""
+        # Wait for start signal
+        if not self.wait_for_start():
+            return
+        
         self.get_logger().info(f"[{self.arm}] Starting ROS_TELE MODE...")
         self.get_logger().info("Waiting for teleop data on /teleop/left_wrist_pos...")
         
-        self.send_vel_limit([4,4,4,4,4,4], [4,4,4,4,4,4])
+        # self.send_vel_limit([4,4,4,4,4,4], [4,4,4,4,4,4])
         
         # Continuous teleop loop
-        while rclpy.ok():
+        while rclpy.ok() and self.program_running and not self.program_stopped:
             with self.teleop_lock:
                 wrist_data = self.teleop_wrist_data
             
@@ -702,10 +796,14 @@ class TrajFollow(Node):
     
     def run_print_mode(self):
         """Debug mode - print transformations without sending commands"""
+        # Wait for start signal
+        if not self.wait_for_start():
+            return
+        
         self.get_logger().info("Starting PRINT MODE - will print transformations only...")
         
         # Use left arm trajectory file
-        filepath = '/home/nvidia/ke/r1_pro_sdk_118/install/share/mobiman/scripts/left/left.csv'
+        filepath = '/home/irislab/r1pro_control/robot_control_ros2/recorded_trajectories/left_wrist_20250815_144818.csv'
         if not os.path.exists(filepath):
             self.get_logger().error(f"Trajectory file not found: {filepath}")
             return
@@ -745,6 +843,10 @@ class TrajFollow(Node):
     
     def run_ori_mode(self):
         """Orientation only mode with fixed position"""
+        # Wait for start signal
+        if not self.wait_for_start():
+            return
+        
         self.get_logger().info("Starting ORI MODE - fixed position, orientation from CSV...")
         
         # Wait for current pose to set fixed position
@@ -752,7 +854,7 @@ class TrajFollow(Node):
             return
         
         # Use left arm trajectory file
-        filepath = '/home/nvidia/ke/r1_pro_sdk_118/install/share/mobiman/scripts/left/left.csv'
+        filepath = '/home/irislab/r1pro_control/robot_control_ros2/recorded_trajectories/left_wrist_20250815_144818.csv'
         if not os.path.exists(filepath):
             self.get_logger().error(f"Trajectory file not found: {filepath}")
             return
@@ -763,6 +865,11 @@ class TrajFollow(Node):
         self.send_vel_limit([4,4,4,4,4,4], [4,4,4,4,4,4])
         
         for idx, point in enumerate(trajectory_points, start=1):
+            # Check if program should stop
+            if not self.program_running or self.program_stopped:
+                self.get_logger().info("Program stopped by user")
+                break
+            
             pose_msg = PoseStamped()
             pose_msg.header.stamp = self.get_clock().now().to_msg()
             pose_msg.header.frame_id = 'base_link'
@@ -787,6 +894,39 @@ class TrajFollow(Node):
         
         self.get_logger().info("ORI MODE complete")
     
+    def run_test_keyboard_mode(self):
+        """Test mode to verify keyboard control without ROS topics"""
+        from datetime import datetime
+        
+        self.get_logger().info("[TEST MODE] Testing keyboard control...")
+        self.get_logger().info("This mode will print timestamps to test 's' and 'f' keys")
+        
+        # Wait for start signal
+        if not self.wait_for_start():
+            self.get_logger().info("[TEST MODE] Stopped before starting")
+            return
+        
+        self.get_logger().info("[TEST MODE] Started! Will print time every second...")
+        self.get_logger().info("[TEST MODE] Press 'f' to stop")
+        
+        counter = 0
+        while rclpy.ok() and self.program_running and not self.program_stopped:
+            counter += 1
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{counter:04d}] Time: {current_time} - Program is running...")
+            
+            # Sleep for 1 second but check for stop signal more frequently
+            for _ in range(10):
+                if not self.program_running or self.program_stopped:
+                    break
+                time.sleep(0.1)
+                rclpy.spin_once(self, timeout_sec=0.01)
+        
+        if self.program_stopped or not self.program_running:
+            self.get_logger().info(f"[TEST MODE] Stopped by user after {counter} iterations")
+        else:
+            self.get_logger().info(f"[TEST MODE] Completed {counter} iterations")
+    
     def run(self):
         """Main run method - dispatches to appropriate mode"""
         if self.mode == 'move_step':
@@ -801,13 +941,16 @@ class TrajFollow(Node):
             self.run_print_mode()
         elif self.mode == 'ori':
             self.run_ori_mode()
-        else:
+        elif self.mode == 'normal':
             self.run_normal_mode()
+        else:
+            # Test mode - print current time to test keyboard control
+            self.run_test_keyboard_mode()
 
 def main():
     """Main function - parse arguments and run node"""
     # Parse command line arguments
-    mode = 'normal'  # Default mode
+    mode = 'ros_tele'  # Default mode
     
     if len(sys.argv) > 1:
         arg_map = {
@@ -817,7 +960,8 @@ def main():
             '--translation': 'translation',
             '--translation_smooth': 'translation_smooth',
             '--print': 'print',
-            '--ori': 'ori'
+            '--ori': 'ori',
+            '--time':  'time'
         }
         
         if sys.argv[1] in arg_map:
@@ -839,6 +983,10 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        # Signal threads to stop
+        node.program_stopped = True
+        if node.keyboard_thread:
+            node.keyboard_thread.join(timeout=1.0)
         node.destroy_node()
         rclpy.shutdown()
 
