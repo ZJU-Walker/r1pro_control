@@ -2,8 +2,7 @@
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
-from sensor_msgs.msg import CompressedImage
-from rclpy.qos import qos_profile_sensor_data
+# Removed sensor_msgs imports as we're using ZED SDK directly
 import threading
 import time
 import select
@@ -18,6 +17,7 @@ import cv2.aruco as aruco
 from datetime import datetime
 import transforms3d.euler as tfe
 import transforms3d.quaternions as tfq
+import pyzed.sl as sl
 
 
 ### ---------- Controller ----------
@@ -34,12 +34,19 @@ class ArmKeyboardControl(Node):
         self.latest_rvec = None
         self.message_received = False
         
+        # Latest image for display
+        self.latest_image = None
+        self.image_lock = threading.Lock()
+        
         # Frame rate tracking
         self.last_frame_time = time.time()
         self.fps = 0.0
         self.frame_count = 0
         self.fps_update_time = time.time()
         self.image_resolution = (0, 0)
+        
+        # Initialize ZED camera
+        self.init_zed_camera()
 
         if arm_choice == '1':
             self.arm = 'left'
@@ -58,30 +65,14 @@ class ArmKeyboardControl(Node):
             self.pose_topic,
             self.pose_callback,
             10)
-        
-        self.image_sub = self.create_subscription(
-            CompressedImage,
-            "/hdas/camera_head/left/image_rect_color/compressed",
-            self.image_callback,
-            qos_profile_sensor_data)
-        # Alternative: "/zedm/zed_node/left_raw/image_raw_color/compressed"
 
         # Create publisher
         self.pub = self.create_publisher(PoseStamped, self.target_topic, 10)
 
-        # Camera calibration parameters (zedmini)
-        self.camera_matrix = np.array([[730.2571411132812, 0.0, 637.2598876953125],
-                                       [0.0, 730.2571411132812, 346.41082763671875],
-                                       [0.0, 0.0, 1.0]])
-        # Alternative calibration:
-        # self.camera_matrix = np.array([[528.4229125976562, 0.0, 635.5908203125],
-        #                         [0.0, 528.4229125976562, 359.7709045410156],
-        #                         [0.0, 0.0, 1.0]])
-
         self.dist_coeffs = np.zeros((5, 1))
-        self.marker_length = 0.03813
+        self.marker_length = 0.048
         self.target_id = 23
-        self.aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_5X5_50)
+        self.aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_5X5_100)
         self.aruco_params = aruco.DetectorParameters()
 
         # Create directory for camera calibration data
@@ -93,6 +84,11 @@ class ArmKeyboardControl(Node):
         time.sleep(0.5)
         self.get_logger().info("EE pose received.")
         cv2.namedWindow("Aruco Detection + EE", cv2.WINDOW_NORMAL)
+        
+        # Start image processing thread
+        self.image_thread = threading.Thread(target=self.image_processing_loop)
+        self.image_thread.daemon = True
+        self.image_thread.start()
 
     def wait_for_first_message(self, timeout=10.0):
         """Wait for first pose message with timeout"""
@@ -109,12 +105,65 @@ class ArmKeyboardControl(Node):
             self.current_pose = msg
             self.message_received = True
 
-    def image_callback(self, msg):
+    def init_zed_camera(self):
+        init_params = sl.InitParameters()
+        init_params.camera_fps = 30
+        init_params.camera_resolution = sl.RESOLUTION.HD720
+        init_params.coordinate_units = sl.UNIT.METER
+        init_params.depth_mode = sl.DEPTH_MODE.NONE
+
+        self.zed_cam = sl.Camera()
+        err = self.zed_cam.open(init_params)
+        if err != sl.ERROR_CODE.SUCCESS:
+            self.get_logger().error(f"Failed to open ZED camera: {err}")
+            raise RuntimeError(f"ZED open failed: {err}")
+
+        # >>> IMPORTANT: use rectified intrinsics for VIEW.LEFT
+        cam_info = self.zed_cam.get_camera_information()
+        calib = cam_info.camera_configuration.calibration_parameters  # rectified model
+        left = calib.left_cam  # has fx, fy, cx, cy for this resolution
+
+        self.camera_matrix = np.array([
+            [left.fx, 0.0,   left.cx],
+            [0.0,     left.fy, left.cy],
+            [0.0,     0.0,   1.0]
+        ], dtype=np.float64)
+
+        # Rectified images => zero distortion
+        self.dist_coeffs = np.zeros((5, 1), dtype=np.float64)
+
+        self.runtime_params = sl.RuntimeParameters()
+        self.zed_image = sl.Mat()
+
+        # Optional: log and sanity-check against incoming image size
+        self.get_logger().info(
+            f"Rectified K: fx={left.fx:.2f}, fy={left.fy:.2f}, cx={left.cx:.2f}, cy={left.cy:.2f}"
+        )
+
+    
+    def image_processing_loop(self):
+        """Continuously grab and process images from ZED camera"""
+        while rclpy.ok():
+            try:
+                if self.zed_cam.grab(self.runtime_params) == sl.ERROR_CODE.SUCCESS:
+                    # Retrieve left image
+                    self.zed_cam.retrieve_image(self.zed_image, sl.VIEW.LEFT)
+                    
+                    # Convert to OpenCV format (BGRA to BGR)
+                    img_data = self.zed_image.get_data()
+                    if img_data is not None:
+                        # ZED returns BGRA, convert to BGR for OpenCV
+                        img = cv2.cvtColor(img_data, cv2.COLOR_BGRA2BGR)
+                        self.process_image(img)
+                else:
+                    time.sleep(0.01)  # Small delay if grab fails
+            except Exception as e:
+                self.get_logger().error(f"Error in image processing loop: {e}")
+                time.sleep(0.1)
+    
+    def process_image(self, img):
+        """Process the image for ArUco detection and display"""
         try:
-            np_arr = np.frombuffer(msg.data, np.uint8)
-            img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-            if img is None:
-                return
             
             # Update resolution and frame rate
             self.image_resolution = (img.shape[1], img.shape[0])  # (width, height)
@@ -154,21 +203,17 @@ class ArmKeyboardControl(Node):
 
                     # T_base_cam from Open3D (cam_T_base = np.linalg.inv(T_base_cam))
                     T_base_cam = np.array([
-                        [ 0.07868202, -0.82816949,  0.55492742,  0.14031877],
-                        [-0.99689748, -0.06417249,  0.04557752,  0.02810416],
-                        [-0.00213484, -0.55679188, -0.83064929,  0.46576442],
+                        [ 0.0047011 , -0.86116956,  0.50829607,  0.13993535],
+                        [-0.99997691, -0.00654272, -0.00183634,  0.04082897],
+                        [ 0.00490704, -0.5082757 , -0.86118043,  0.46200302],
                         [ 0.        ,  0.        ,  0.        ,  1.        ]
                     ])
-                    # Alternative transformations:
-                    # T_base_cam = np.array([
-                    #     [ 0.0754638632, -0.801161710,  0.593670886,  0.154402045],
-                    #     [-0.996995113, -0.0501787037, 0.0590156055, -0.000844939755],
-                    #     [-0.0174914079, -0.596340517, -0.802540988,  0.473978148],
-                    #     [0.0, 0.0, 0.0, 1.0]
-                    # ])
 
                     # Compute EE in camera frame
-                    ee_cam = np.dot(np.linalg.inv(T_base_cam), ee_base)
+                    # ee_cam = np.dot(np.linalg.inv(T_base_cam), ee_base)
+                    T_cam_base = np.linalg.inv(T_base_cam)
+                    ee_cam = T_cam_base @ ee_base
+
 
                     if ee_cam[2] > 0:  # in front of the camera
                         point_2d = self.camera_matrix @ ee_cam[:3]
@@ -190,15 +235,14 @@ class ArmKeyboardControl(Node):
                 cv2.putText(img_with_detections, detection_text, (10, 60),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
 
-            cv2.imshow("Aruco Detection + EE", img_with_detections)
-            cv2.waitKey(1)
+            # Store the latest processed image
+            with self.image_lock:
+                # self.latest_image = img_with_detections.copy()
+                self.latest_image = img_with_detections
+
 
         except Exception as e:
             self.get_logger().error(f"Aruco detection or projection failed: {e}")
-
-    def quaternion_from_euler(self, roll, pitch, yaw):
-        """Convert Euler angles to quaternion"""
-        return tfe.euler2quat(roll, pitch, yaw)
 
     def quaternion_multiply(self, q1, q2):
         """Multiply two quaternions [x, y, z, w]"""
@@ -240,13 +284,19 @@ class ArmKeyboardControl(Node):
                         print("[INFO] Start detecting ArUco ID 23...")
                     else:
                         self.update_pose_by_key(key)
+            
                 
-                # Process callbacks and update display
-                rclpy.spin_once(self, timeout_sec=0.001)
-                cv2.waitKey(1)
+                # Display the latest image
+                with self.image_lock:
+                    if self.latest_image is not None:
+                        cv2.imshow("Aruco Detection + EE", self.latest_image)
+                        cv2.waitKey(1)
         finally:
             # Restore terminal settings
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+            # Close ZED camera
+            self.zed_cam.close()
+            self.get_logger().info("ZED camera closed")
 
     def update_pose_by_key(self, key):
         with self.lock:
@@ -322,14 +372,7 @@ class ArmKeyboardControl(Node):
                 return
 
             try:
-                R_detected, _ = cv2.Rodrigues(self.latest_rvec)
-                # Rotation correction (if needed)
-                # R_y = cv2.Rodrigues(np.array([0, -np.pi/2, 0]))[0]
-                # R_z = cv2.Rodrigues(np.array([0, 0, -np.pi/2]))[0]
-                # R_correction = R_y @ R_z
-                # R_corrected = R_correction @ R_detected
-                R_corrected = R_detected
-                rvec_corrected = cv2.Rodrigues(R_corrected)[0]
+                rvec = self.latest_rvec
             except Exception as e:
                 self.get_logger().error(f"Failed to correct ArUco rotation: {e}")
                 return
@@ -341,7 +384,7 @@ class ArmKeyboardControl(Node):
             row = [
                 timestamp,
                 *self.latest_tvec,
-                *rvec_corrected.flatten(),
+                *self.latest_rvec,
                 p.x, p.y, p.z,
                 o.x, o.y, o.z, o.w
             ]
@@ -374,20 +417,29 @@ def main():
         rclpy.init()
         node = ArmKeyboardControl(choice)
         
+        # --- in main(), after creating node ---
+        from rclpy.executors import MultiThreadedExecutor
+        exec = MultiThreadedExecutor()
+        exec.add_node(node)
+        spin_thread = threading.Thread(target=exec.spin, daemon=True)
+        spin_thread.start()
+
         try:
-            node.run()
+            node.run()  # your keyboard/UI loop
         except KeyboardInterrupt:
             pass
         finally:
+            exec.shutdown()          # stop executor
+            cv2.destroyAllWindows()
             node.destroy_node()
             rclpy.shutdown()
-            
+                    
     except Exception as e:
         print(f"Error: {e}")
         if rclpy.ok():
             rclpy.shutdown()
     finally:
-        cv2.destroyAllWindows()
+        pass
 
 
 if __name__ == '__main__':
