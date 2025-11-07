@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.venv/
+env/
+venv/
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# Logs and temp files
+*.log
+*.tmp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE settings
+.vscode/
+.idea/
+
+# Build / output folders
+build/
+dist/
+*.egg-info/
+
+# Data / model files
+*.csv
+*.npy
+*.pt
+*.h5
+*.pkl
+*.hdf5
+*.mp4
+
+./claude
+
+# Ignore LibreOffice / temporary lock files
+.~lock.*#
