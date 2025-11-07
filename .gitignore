@@ -36,8 +36,12 @@ dist/
 *.pkl
 *.hdf5
 *.mp4
+*.txt
+*.jpg
+*.png
 
 ./claude
 
 # Ignore LibreOffice / temporary lock files
 .~lock.*#
+*.pth
