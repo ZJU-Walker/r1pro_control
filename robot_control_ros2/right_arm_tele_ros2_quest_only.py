@@ -582,7 +582,7 @@ class TrajFollow(Node):
         self.get_logger().info(f"[{self.arm}] Starting MOVE_STEP MODE - incremental movement...")
         
         # Load trajectory
-        filepath = '/home/irislab/r1pro_control/robot_control_ros2/test_act_0919.csv'
+        filepath = '/home/irislab/r1pro_teleop/teleop/recording_base_frame_20250919_021601.csv'
         if not os.path.exists(filepath):
             self.get_logger().error(f"Trajectory file not found: {filepath}")
             return
@@ -721,7 +721,8 @@ class TrajFollow(Node):
         
         self.get_logger().info(f"[{self.arm}] Starting ROS_TELE MODE...")
         self.get_logger().info("Waiting for teleop data on /teleop/right_wrist_pos...")
-
+        
+        # self.send_vel_limit([4,4,4,4,4,4], [4,4,4,4,4,4])
         
         # Continuous teleop loop
         while rclpy.ok() and self.program_running and not self.program_stopped:
@@ -729,22 +730,29 @@ class TrajFollow(Node):
                 wrist_data = self.teleop_wrist_data
             
             if wrist_data is not None:
-                # Extract position and orientation from teleop data (base frame)
-                base_pt = np.array([
+                # Extract position and orientation from teleop data (camera frame)
+                cam_pt = np.array([
                     wrist_data.pose.position.x,
                     wrist_data.pose.position.y,
                     wrist_data.pose.position.z,
                     1.0
                 ])
-                base_pt[2] -=0.3
                 
-                q_base_ee = np.array([
+                q_cam = np.array([
                     wrist_data.pose.orientation.x,
                     wrist_data.pose.orientation.y,
                     wrist_data.pose.orientation.z,
                     wrist_data.pose.orientation.w
                 ])
-            
+                
+                # Transform position from camera to base frame
+                base_pt = self.T_cam_to_base.dot(cam_pt)
+                # add 0.1m offset to robot x axis
+                base_pt[0] += 0.1
+                
+                # Transform orientation
+                q_base_hand = self.quaternion_multiply(self.q_cam_to_base, q_cam)
+                q_base_ee = self.quaternion_multiply(q_base_hand, self.q_hand_to_ee)
                 
                 # Build and send pose message
                 pose_msg = PoseStamped()

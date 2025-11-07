@@ -42,7 +42,6 @@ class TrajFollow(Node):
         
         # Arm configuration
         self.arm = 'right'
-        # self.pose_topic = f'/motion_control/pose_ee_arm_{self.arm}'
         self.pose_topic = f'/relaxed_ik/motion_control/pose_ee_arm_{self.arm}'
         self.target_topic = f'/motion_target/target_pose_arm_{self.arm}'
         
@@ -630,89 +629,6 @@ class TrajFollow(Node):
         
         self.get_logger().info(f"[{self.arm}] MOVE_STEP MODE complete")
     
-    def run_translation_mode(self):
-        """Position only movement with fixed orientation"""
-        self.get_logger().info(f"[{self.arm}] Starting TRANSLATION MODE - fixed orientation...")
-        
-        # Wait for current pose to set fixed orientation
-        if not self.wait_for_current_pose():
-            return
-        
-        # Load trajectory
-        filepath = '/home/nvidia/ke/r1_pro_sdk/install/share/mobiman/script/right/robot_commands_right_hand_translate.csv'
-        if not os.path.exists(filepath):
-            self.get_logger().error(f"Trajectory file not found: {filepath}")
-            return
-        
-        self.trajectory_points = self.load_trajectory_points(filepath)
-        self.get_logger().info(f"Loaded {len(self.trajectory_points)} trajectory points")
-        
-        self.get_logger().info("Ready for incremental position movement with fixed orientation!")
-        self.get_logger().info("Press '1' + Enter to take one step")
-        self.get_logger().info("Press 'q' + Enter to quit")
-        
-        self.send_vel_limit([4,4,4,4,4,4], [4,4,4,4,4,4])
-        
-        while rclpy.ok():
-            try:
-                if self.current_target_idx >= len(self.trajectory_points):
-                    print("All trajectory points completed!")
-                    break
-                
-                current_target = self.current_target_idx + 1
-                total_targets = len(self.trajectory_points)
-                print(f"\n[TARGET {current_target}/{total_targets}] Press '1' to step, 'q' to quit: ", end='')
-                
-                user_input = input().strip()
-                if user_input == '1':
-                    if not self.execute_translation_step():
-                        break
-                elif user_input.lower() == 'q':
-                    print("Quitting translation mode...")
-                    break
-                else:
-                    print("Invalid input.")
-                
-                rclpy.spin_once(self, timeout_sec=0.01)
-                
-            except KeyboardInterrupt:
-                print("\nQuitting translation mode...")
-                break
-        
-        self.get_logger().info(f"[{self.arm}] TRANSLATION MODE complete")
-    
-    def run_translation_smooth_mode(self):
-        """Automatic smooth translation with fixed orientation"""
-        self.get_logger().info(f"[{self.arm}] Starting TRANSLATION_SMOOTH MODE...")
-        
-        # Wait for current pose to set fixed orientation
-        if not self.wait_for_current_pose():
-            return
-        
-        # Load trajectory
-        filepath = '/home/nvidia/ke/r1_pro_sdk/install/share/mobiman/script/right/robot_commands_right_hand_translate.csv'
-        if not os.path.exists(filepath):
-            self.get_logger().error(f"Trajectory file not found: {filepath}")
-            return
-        
-        self.trajectory_points = self.load_trajectory_points(filepath)
-        self.get_logger().info(f"Loaded {len(self.trajectory_points)} trajectory points")
-        
-        self.get_logger().info("Starting automatic smooth translation movement!")
-        self.send_vel_limit([4,4,4,4,4,4], [4,4,4,4,4,4])
-        
-        # Automatic smooth execution
-        while rclpy.ok() and self.current_target_idx < len(self.trajectory_points):
-            if not self.execute_translation_step():
-                break
-            time.sleep(0.1)  # 10Hz update rate
-            rclpy.spin_once(self, timeout_sec=0.01)
-        
-        if self.current_target_idx >= len(self.trajectory_points):
-            self.get_logger().info("✓ All trajectory points completed successfully!")
-        
-        self.get_logger().info(f"[{self.arm}] TRANSLATION_SMOOTH MODE complete")
-    
     def run_ros_tele_mode(self):
         """Real-time teleop control via ROS topics"""
         # Wait for start signal
@@ -771,105 +687,12 @@ class TrajFollow(Node):
         
         self.get_logger().info(f"[{self.arm}] ROS_TELE MODE complete")
     
-    def run_print_mode(self):
-        """Debug mode - print transformations without sending commands"""
-        self.get_logger().info("Starting PRINT MODE - will print transformations only...")
-        
-        filepath = 'robot_control_ros2/recorded_trajectories/right_wrist_20250821_223332.csv'
-        if not os.path.exists(filepath):
-            self.get_logger().error(f"Trajectory file not found: {filepath}")
-            return
-        
-        with open(filepath, 'r') as f:
-            reader = csv.DictReader(f)
-            
-            for idx, row in enumerate(reader, start=1):
-                # Parse camera frame data
-                cam_pt = np.array([
-                    float(row['wrist_x']),
-                    float(row['wrist_y']),
-                    float(row['wrist_z']),
-                    1.0
-                ])
-                
-                q_cam = np.array([
-                    float(row['qx']),
-                    float(row['qy']),
-                    float(row['qz']),
-                    float(row['qw'])
-                ])
-                
-                # Transform to base frame
-                base_pt = self.T_cam_to_base.dot(cam_pt)
-                q_base_hand = self.quaternion_multiply(self.q_cam_to_base, q_cam)
-                q_base_ee = self.quaternion_multiply(q_base_hand, self.q_hand_to_ee)
-                
-                print(f"\n[TEST] Row {idx}:")
-                print(f"  Camera frame: pos=[{cam_pt[0]:.6f}, {cam_pt[1]:.6f}, {cam_pt[2]:.6f}]")
-                print(f"               quat=[{q_cam[0]:.6f}, {q_cam[1]:.6f}, {q_cam[2]:.6f}, {q_cam[3]:.6f}]")
-                print(f"  Base frame:   pos=[{base_pt[0]:.6f}, {base_pt[1]:.6f}, {base_pt[2]:.6f}]")
-                print(f"  EE frame:    quat=[{q_base_ee[0]:.6f}, {q_base_ee[1]:.6f}, {q_base_ee[2]:.6f}, {q_base_ee[3]:.6f}]")
-                print(f"  Would publish to topic: {self.target_topic}")
-        
-        self.get_logger().info(f"PRINT MODE complete - printed {idx} transformation results.")
-    
-    def run_ori_mode(self):
-        """Orientation only mode with fixed position"""
-        self.get_logger().info("Starting ORI MODE - fixed position, orientation from CSV...")
-        
-        # Wait for current pose to set fixed position
-        if not self.wait_for_current_pose():
-            return
-        
-        filepath = 'robot_control_ros2/recorded_trajectories/right_wrist_20250821_223332.csv'
-        if not os.path.exists(filepath):
-            self.get_logger().error(f"Trajectory file not found: {filepath}")
-            return
-        
-        trajectory_points = self.load_trajectory_points(filepath)
-        self.get_logger().info(f"Loaded {len(trajectory_points)} trajectory points")
-        
-        self.send_vel_limit([4,4,4,4,4,4], [4,4,4,4,4,4])
-        
-        for idx, point in enumerate(trajectory_points, start=1):
-            pose_msg = PoseStamped()
-            pose_msg.header.stamp = self.get_clock().now().to_msg()
-            pose_msg.header.frame_id = 'base_link'
-            
-            # Use fixed position
-            pose_msg.pose.position.x = self.fixed_position[0]
-            pose_msg.pose.position.y = self.fixed_position[1]
-            pose_msg.pose.position.z = self.fixed_position[2]
-            
-            # Use orientation from CSV
-            pose_msg.pose.orientation.x = point['orientation'][0]
-            pose_msg.pose.orientation.y = point['orientation'][1]
-            pose_msg.pose.orientation.z = point['orientation'][2]
-            pose_msg.pose.orientation.w = point['orientation'][3]
-            
-            self.pub.publish(pose_msg)
-            
-            self.get_logger().info(f"[{idx}] Sent orientation with fixed position")
-            time.sleep(0.05)  # 20Hz
-            
-            rclpy.spin_once(self, timeout_sec=0.01)
-        
-        self.get_logger().info("ORI MODE complete")
-    
     def run(self):
         """Main run method - dispatches to appropriate mode"""
         if self.mode == 'move_step':
             self.run_move_step_mode()
         elif self.mode == 'ros_tele':
             self.run_ros_tele_mode()
-        elif self.mode == 'translation':
-            self.run_translation_mode()
-        elif self.mode == 'translation_smooth':
-            self.run_translation_smooth_mode()
-        elif self.mode == 'print':
-            self.run_print_mode()
-        elif self.mode == 'ori':
-            self.run_ori_mode()
         else:
             self.run_normal_mode()
 
