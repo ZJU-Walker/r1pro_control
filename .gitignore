@@ -45,3 +45,8 @@ dist/
 # Ignore LibreOffice / temporary lock files
 .~lock.*#
 *.pth
+
+policy_eval/logs
+*.pdf
+manus_control/Inspired hand/
+manus_control/manus_visualize/
