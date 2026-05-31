@@ -29,7 +29,7 @@ def set_target_right(q, motor_count=20):
     if USER_NAME == 'brain':
         print("User: brain - using manus_glove_0 for RIGHT hand")
         mGripperCalibrationData = [0.7, 1.2, 1.2, 1.2, 
-                                   1.0, 1.3, 1.0, 0.9, 
+                                   1.0, 1.5, 1.0, 0.9, 
                                    1.0, 1.0, 1.0, 1.0, 
                                    1.0, 1.0, 1.0, 1.0, 
                                    1.0, 1.0, 1.0, 1.0]
@@ -70,8 +70,8 @@ def set_target_right(q, motor_count=20):
     qd[1] = (q[0] + 36) * (math.pi / 180)
     # qd[0] = (38.5 - q[1]) * (math.pi / 180)
     # qd[1] = (q[0] + 36) * (math.pi / 180)
-    qd[2] = (q[2] + 10) * (math.pi / 180)
-    qd[3] = (q[3] + 5) * (math.pi / 180)
+    qd[2] = (q[2] + 5) * (math.pi / 180)
+    qd[3] = (q[3] + 1) * (math.pi / 180)
 
     qd[4] = q[4] * (math.pi / 180)
     qd[5] = q[5] * (math.pi / 180)

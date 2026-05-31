@@ -127,7 +127,7 @@ class ManusControlNode(Node):
         # Create subscriber for Manus glove data
         self.glove_subscriber = self.create_subscription(
             ManusGlove,
-            '/manus_glove_1',
+            '/manus_glove_0',
             self.glove_callback,
             10
         )
