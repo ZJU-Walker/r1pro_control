@@ -37,7 +37,7 @@ class HandCsvReplayer(Node):
         super().__init__('hand_csv_replayer_node')
 
         # choose left or right
-        self.arm = 'right'   # change to 'right' if needed
+        self.arm = 'left'   # change to 'right' if needed
         self.csv_filepath = csv_filepath
 
         # correct joint order
@@ -183,7 +183,7 @@ class HandCsvReplayer(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    csv_file = '/home/irislab/r1pro_control/robot_control_ros2/6.csv'
+    csv_file = '/home/irislab/r1pro_control/robot_control_ros2/replay_files/ee_hand_composition.csv'
     node = HandCsvReplayer(csv_filepath=csv_file)
     try:
         node.run()

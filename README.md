@@ -25,7 +25,7 @@ Main teleoperation and control scripts:
 - **`right_arm_tele_ros2.py`** - Right arm teleoperation with ROS2
 - **`dual_arm_tele.py`** - Dual arm teleoperation
 - **`dual_arm_tele_mirror.py`** - Dual arm mirror teleoperation
-- **`dual_arm_tele_flipped_controller.py`** - Dual arm with flipped controller
+- **`dual_arm_tele_flipped_controller.py`** - Dual arm with flipped controller mapping (see [details below](#dual-arm-flipped-controller))
 - **`left_arm_tele_ros2_quest_only.py`** - Left arm Quest-only control
 - **`right_arm_tele_ros2_quest_only.py`** - Right arm Quest-only control
 
@@ -95,6 +95,43 @@ python robot_control_ros2/hand_control.py
 
 # Replay hand trajectories
 python robot_control_ros2/replay_hands.py
+```
+
+## Dual Arm Flipped Controller
+
+The `dual_arm_tele_flipped_controller.py` provides teleoperation with a **flipped control mapping** where controller sides are swapped:
+- **Left controller** controls the **right arm**
+- **Right controller** controls the **left arm**
+
+### ROS2 Topics
+
+| Type | Topic | Purpose |
+|------|-------|---------|
+| Subscribe | `/teleop/left_tele_mode` | Enable/disable right arm control (Bool) |
+| Subscribe | `/teleop/right_tele_mode` | Enable/disable left arm control (Bool) |
+| Subscribe | `/teleop/left_ee_raw_pose` | Raw pose from left controller (PoseStamped) |
+| Subscribe | `/teleop/right_ee_raw_pose` | Raw pose from right controller (PoseStamped) |
+| Publish | `/motion_target/target_pose_arm_left` | Target pose for left arm (PoseStamped) |
+| Publish | `/motion_target/target_pose_arm_right` | Target pose for right arm (PoseStamped) |
+
+### Position Offsets
+Controller poses are offset before being sent to the robot:
+- **Right arm**: `x+0.15m, y-0.05m, z+0.4m`
+- **Left arm**: `x+0.2m, y+0.0m, z+0.4m`
+
+### Safety Features
+- **Position jump limit**: 20cm max between consecutive commands
+- **Orientation jump limit**: 45 degrees max rotation between commands
+- If either limit is exceeded, the node **shuts down immediately** to prevent dangerous movements
+
+### Usage
+```bash
+# Run the flipped controller
+python robot_control_ros2/dual_arm_tele_flipped_controller.py
+
+# Enable/disable arms via ROS2 topics
+ros2 topic pub /teleop/left_tele_mode std_msgs/Bool "data: true"   # Enable right arm
+ros2 topic pub /teleop/right_tele_mode std_msgs/Bool "data: true"  # Enable left arm
 ```
 
 ## Requirements

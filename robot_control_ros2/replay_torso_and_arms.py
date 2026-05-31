@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+"""
+Replay torso, arms, and hands from CSV file with keyboard control.
+- 'n': Move to next frame
+- 'c': Play continuously
+- 'r': Reset to beginning
+- 'q': Quit
+"""
+
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import JointState
+from geometry_msgs.msg import PoseStamped
+from std_msgs.msg import Float32MultiArray
+from pynput import keyboard
+import csv
+import time
+import numpy as np
+
+# Global state
+current_torso_pos = [0.0] * 4
+torso_received = False
+
+trajectory = []
+current_idx = 0
+step_requested = False
+play_requested = False
+reset_requested = False
+shutdown_requested = False
+
+PLAYBACK_RATE = 30  # Hz
+
+# Topic names
+TOPIC_TORSO_FEEDBACK = '/hdas/feedback_torso'
+TOPIC_TORSO_TARGET = '/motion_targetsss/target_joint_state_torso'
+TOPIC_WRIST_LEFT_TARGET = '/motion_targetsss/target_pose_arm_left'
+TOPIC_WRIST_RIGHT_TARGET = '/motion_targetsss/target_pose_arm_right'
+TOPIC_HAND_LEFT_CMD = '/teleop/inspire_left_command'
+TOPIC_HAND_RIGHT_CMD = '/teleop/inspire_right_command'
+
+
+def feedback_callback(msg):
+    global current_torso_pos, torso_received
+    if len(msg.position) >= 4:
+        current_torso_pos = list(msg.position)
+        torso_received = True
+
+
+def on_key_press(key):
+    global step_requested, play_requested, reset_requested, shutdown_requested
+    try:
+        if key.char == 'n':
+            step_requested = True
+        elif key.char == 'c':
+            play_requested = True
+            print("\r--> 'c': Playing trajectory continuously...")
+        elif key.char == 'r':
+            reset_requested = True
+        elif key.char == 'q':
+            print("\r--> 'q': Quitting...")
+            shutdown_requested = True
+            return False
+    except AttributeError:
+        pass
+
+
+def load_csv(filepath):
+    """Load trajectory from CSV file."""
+    global trajectory
+    with open(filepath, 'r') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            frame = {
+                'frame_id': row['frame_id'],
+                # Left arm pose
+                'left_pos': np.array([
+                    float(row['left_wrist_x']),
+                    float(row['left_wrist_y']),
+                    float(row['left_wrist_z'])
+                ]),
+                'left_ori': np.array([
+                    float(row['left_wrist_qx']),
+                    float(row['left_wrist_qy']),
+                    float(row['left_wrist_qz']),
+                    float(row['left_wrist_qw'])
+                ]),
+                # Right arm pose
+                'right_pos': np.array([
+                    float(row['right_wrist_x']),
+                    float(row['right_wrist_y']),
+                    float(row['right_wrist_z'])
+                ]),
+                'right_ori': np.array([
+                    float(row['right_wrist_qx']),
+                    float(row['right_wrist_qy']),
+                    float(row['right_wrist_qz']),
+                    float(row['right_wrist_qw'])
+                ]),
+                # Left hand joints (6 values)
+                'left_hand': np.array([
+                    float(row['left_hand_0']),
+                    float(row['left_hand_1']),
+                    float(row['left_hand_2']),
+                    float(row['left_hand_3']),
+                    float(row['left_hand_4']),
+                    float(row['left_hand_5'])
+                ]),
+                # Right hand joints (6 values)
+                'right_hand': np.array([
+                    float(row['right_hand_0']),
+                    float(row['right_hand_1']),
+                    float(row['right_hand_2']),
+                    float(row['right_hand_3']),
+                    float(row['right_hand_4']),
+                    float(row['right_hand_5'])
+                ]),
+                # Torso joints (4 values)
+                'torso': np.array([
+                    float(row['torso_joint_0']),
+                    float(row['torso_joint_1']),
+                    float(row['torso_joint_2']),
+                    float(row['torso_joint_3'])
+                ])
+            }
+            trajectory.append(frame)
+    print(f"Loaded {len(trajectory)} frames from CSV")
+
+
+def publish_frame(node, idx, torso_pub, wrist_pub_L, wrist_pub_R, hand_pub_L, hand_pub_R):
+    """Publish a single frame to all controllers."""
+    if idx >= len(trajectory):
+        return
+
+    frame = trajectory[idx]
+    stamp = node.get_clock().now().to_msg()
+
+    # Publish torso
+    torso_msg = JointState()
+    torso_msg.header.stamp = stamp
+    torso_msg.position = frame['torso'].tolist()
+    torso_msg.velocity = [1.5] * 4
+    torso_pub.publish(torso_msg)
+
+    # Publish left arm pose
+    pose_L = PoseStamped()
+    pose_L.header.stamp = stamp
+    pose_L.header.frame_id = "base_link"
+    pose_L.pose.position.x = float(frame['left_pos'][0])
+    pose_L.pose.position.y = float(frame['left_pos'][1])
+    pose_L.pose.position.z = float(frame['left_pos'][2])
+    pose_L.pose.orientation.x = float(frame['left_ori'][0])
+    pose_L.pose.orientation.y = float(frame['left_ori'][1])
+    pose_L.pose.orientation.z = float(frame['left_ori'][2])
+    pose_L.pose.orientation.w = float(frame['left_ori'][3])
+    wrist_pub_L.publish(pose_L)
+
+    # Publish right arm pose
+    pose_R = PoseStamped()
+    pose_R.header.stamp = stamp
+    pose_R.header.frame_id = "base_link"
+    pose_R.pose.position.x = float(frame['right_pos'][0])
+    pose_R.pose.position.y = float(frame['right_pos'][1])
+    pose_R.pose.position.z = float(frame['right_pos'][2])
+    pose_R.pose.orientation.x = float(frame['right_ori'][0])
+    pose_R.pose.orientation.y = float(frame['right_ori'][1])
+    pose_R.pose.orientation.z = float(frame['right_ori'][2])
+    pose_R.pose.orientation.w = float(frame['right_ori'][3])
+    wrist_pub_R.publish(pose_R)
+
+    # Publish left hand joints
+    hand_msg_L = Float32MultiArray()
+    hand_msg_L.data = [float(v) for v in frame['left_hand'].tolist()]
+    hand_pub_L.publish(hand_msg_L)
+
+    # Publish right hand joints
+    hand_msg_R = Float32MultiArray()
+    hand_msg_R.data = [float(v) for v in frame['right_hand'].tolist()]
+    hand_pub_R.publish(hand_msg_R)
+
+
+def main():
+    global current_idx, step_requested, play_requested, reset_requested, shutdown_requested, torso_received
+
+    csv_file = '/home/irislab/r1pro_control/robot_control_ros2/replay_files/human_trash_sorting_test.csv'
+    load_csv(csv_file)
+
+    rclpy.init()
+    node = rclpy.create_node('replay_torso_and_arms_node')
+
+    # Subscriber for torso feedback
+    node.create_subscription(JointState, TOPIC_TORSO_FEEDBACK, feedback_callback, 10)
+
+    # Publishers
+    torso_pub = node.create_publisher(JointState, TOPIC_TORSO_TARGET, 10)
+    wrist_pub_L = node.create_publisher(PoseStamped, TOPIC_WRIST_LEFT_TARGET, 10)
+    wrist_pub_R = node.create_publisher(PoseStamped, TOPIC_WRIST_RIGHT_TARGET, 10)
+    hand_pub_L = node.create_publisher(Float32MultiArray, TOPIC_HAND_LEFT_CMD, 10)
+    hand_pub_R = node.create_publisher(Float32MultiArray, TOPIC_HAND_RIGHT_CMD, 10)
+
+    print("Waiting for torso feedback...")
+    while not torso_received and rclpy.ok():
+        rclpy.spin_once(node, timeout_sec=0.1)
+    print("Torso feedback received.")
+
+    listener = keyboard.Listener(on_press=on_key_press)
+    listener.start()
+
+    print("\n" + "=" * 50)
+    print("Torso + Arms + Hands Replay Controller")
+    print("  'n': Next frame")
+    print("  'c': Play continuously")
+    print("  'r': Reset to beginning")
+    print("  'q': Quit")
+    print("=" * 50 + "\n")
+
+    try:
+        while rclpy.ok() and not shutdown_requested:
+            if reset_requested:
+                reset_requested = False
+                current_idx = 0
+                print("Reset to frame 0")
+
+            if step_requested:
+                step_requested = False
+                if current_idx < len(trajectory):
+                    publish_frame(node, current_idx, torso_pub, wrist_pub_L, wrist_pub_R, hand_pub_L, hand_pub_R)
+                    current_idx += 1
+                    print(f"[STEP] Frame {current_idx}/{len(trajectory)}")
+                else:
+                    print("End of trajectory. Press 'r' to reset.")
+
+            if play_requested:
+                play_requested = False
+                print(f"Playing from frame {current_idx}...")
+                while current_idx < len(trajectory) and not shutdown_requested:
+                    publish_frame(node, current_idx, torso_pub, wrist_pub_L, wrist_pub_R, hand_pub_L, hand_pub_R)
+                    print(f"\rPlaying frame {current_idx + 1}/{len(trajectory)}", end="")
+                    current_idx += 1
+                    rclpy.spin_once(node, timeout_sec=0.01)
+                    time.sleep(1.0 / PLAYBACK_RATE)
+                print("\nPlayback done.")
+
+            rclpy.spin_once(node, timeout_sec=0.05)
+
+    finally:
+        listener.stop()
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

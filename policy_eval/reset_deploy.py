@@ -43,7 +43,7 @@ class CsvStepController(Node):
         # --- Configuration ---
         self.arm = 'right'
         self.csv_filepath = csv_filepath
-        self.target_topic = f'/motion_targetsss/target_pose_arm_{self.arm}'
+        self.target_topic = f'/motion_target/target_pose_arm_{self.arm}'
         self.pose_topic = f'/relaxed_ik/motion_control/pose_ee_arm_{self.arm}'
 
         # Select correct joint order based on arm
@@ -286,7 +286,7 @@ class CsvStepController(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    csv_file = '/home/irislab/r1pro_control/robot_control_ros2/replay_files/ee_hand_composition.csv'
+    csv_file = '/home/irislab/r1pro_control/robot_control_ros2/replay_files/ee_hand_pick_place.csv'
     node = CsvStepController(csv_filepath=csv_file)
     try:
         node.run()
