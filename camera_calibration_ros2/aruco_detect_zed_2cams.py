@@ -22,10 +22,10 @@ MARKER_SIZE = 0.048  # 4.8 cm
 #     [ 0.        ,  0.        ,  0.        ,  1.        ]
 # ])
 T_BASE_CAM_LEFT =  np.array([
-    [0.02169645, -0.70143451,  0.71240361,  0.14534308],
-    [-0.99949077,  0.00145864,  0.03187594,  0.03543434],
-    [-0.02339802, -0.71273242, -0.70104567,  0.47400349],
-    [0.0,          0.0,          0.0,          1.0]
+    [0.04132404, -0.66525322,  0.74547332,  0.14260835],
+    [-0.99913683, -0.02435325, 0.03365284,  0.03137822],
+    [-0.00423296, -0.74622052, -0.66568537, 0.42810622],
+    [0.0,         0.0,         0.0,         1.0]
 ])
 
 # T_BASE_CAM_RIGHT = np.array([
@@ -100,7 +100,7 @@ class StereoCalibrator:
             calib.right_cam.disto.flatten()
         )
         
-        aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_5X5_100)
+        aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_5X5_50)
         self.aruco_detector = aruco.ArucoDetector(aruco_dict, aruco.DetectorParameters())
         self.node.get_logger().info("ZED camera (Stereo) and ArUco detector initialized.")
 
