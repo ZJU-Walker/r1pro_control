@@ -15,134 +15,199 @@ conda activate robot_control
 pip install -r requirements.txt
 ```
 
-## Project Structure
+# Robot teleop guide
 
-### Robot Control (`robot_control_ros2/`)
-Main teleoperation and control scripts:
+# 1. On R1-Pro Robot Computer
 
-#### Teleoperation
-- **`left_arm_tele_ros2.py`** - Left arm teleoperation with ROS2
-- **`right_arm_tele_ros2.py`** - Right arm teleoperation with ROS2
-- **`dual_arm_tele.py`** - Dual arm teleoperation
-- **`dual_arm_tele_mirror.py`** - Dual arm mirror teleoperation
-- **`dual_arm_tele_flipped_controller.py`** - Dual arm with flipped controller mapping (see [details below](#dual-arm-flipped-controller))
-- **`left_arm_tele_ros2_quest_only.py`** - Left arm Quest-only control
-- **`right_arm_tele_ros2_quest_only.py`** - Right arm Quest-only control
+ssh galaxea 
 
-#### Hand Control
-- **`hand_control.py`** - Direct hand control interface
-- **`control_hand_single_joint.py`** - Single joint hand control
-- **`replay_hands.py`** - Hand trajectory replay
-- **`replay_arm_and_hands.py`** - Combined arm and hand replay
-- **`replay_arm_and_hands_egodex.py`** - Replay with EgoDex data
+password: nvidia
 
-#### Recording & Replay
-- **`record_wrist_trajectory.py`** - Record wrist trajectories
-- **`record_mirror_command_position.py`** - Record mirror command positions
-- **`right_arm_replay_human.py`** - Replay human demonstrations
+## 1.1 Start Robot Controller
 
-#### Utilities
-- **`key_torso_ros2_no_hand.py`** - Keyboard control for torso (no hand)
-- **`key_torso_ros2_w_inspire_hand.py`** - Keyboard control with Inspire hand
-- **`log_control.py`** - Control logging utilities
-- **`vis_wrist_ori.py`** - Visualize wrist orientation
+new terminal
 
-### Camera Calibration (`camera_calibration_ros2/`)
-Camera calibration and ArUco marker detection:
-- **`aruco_ee_detect_ros2.py`** - ArUco end-effector detection with ROS2
-- **`aruco_detect_zed.py`** - ArUco detection with ZED camera
-- **`aruco_detect_zed_2cams.py`** - ArUco detection with dual ZED cameras
-- **`camera_cali_v2.py`** - Camera calibration v2
-- **`camera_cali_ransac.py`** - RANSAC-based camera calibration
-- **`get_intrinsic.py`** - Extract camera intrinsic parameters
-- **`check.py`** - Calibration verification
-
-### Policy Deployment (`policy_deploy/`)
-ACT-based policy deployment modules for various dates/versions
-
-### Additional Modules
-- **`manus_control/`** - Manus VR glove control integration
-- **`egodex_load/`** - EgoDex dataset loading utilities
-- **`tesollo_ik/`** - Inverse kinematics for Tesollo robot
-- **`tip_to_joints/`** - Fingertip to joint mapping utilities
-- **`urdf/`** - Robot URDF models
-
-## Usage Examples
-
-### Run teleoperation
 ```bash
-# Single arm teleoperation
-python robot_control_ros2/left_arm_tele_ros2.py
-python robot_control_ros2/right_arm_tele_ros2.py
+sudo ip link set can0 type can bitrate 1000000 sample-point 0.875 dbitrate 5000000 fd on dsample-point 0.8
+sudo ip link set up can0  
 
-# Dual arm teleoperation
-python robot_control_ros2/dual_arm_tele.py
+cd ~/
+bash start_robot.sh
 ```
 
-### Camera calibration
-```bash
-# Run ArUco detection with ZED camera
-python camera_calibration_ros2/aruco_detect_zed.py
+---
 
-# Perform camera calibration
-python camera_calibration_ros2/camera_cali_v2.py
+## 1.2 Start Inspire Hand Controllers
+
+new terminal
+
+```bash
+cd ~/inspire_hand
+
+python inspire_left_control.py   # Left hand
+python inspire_right_control.py  # Right hand
 ```
 
-### Hand control
-```bash
-# Control hands directly
-python robot_control_ros2/hand_control.py
+---
 
-# Replay hand trajectories
-python robot_control_ros2/replay_hands.py
+# 2. On iris-robot-ws-3
+
+## 2.0 open folders
+
+- `r1pro_teleop`
+- `r1pro_control`
+
+## 2.1 Start ZED Node (Camera Streaming)
+
+new terminal
+
+```bash
+cd ~/r1pro_teleop/teleop
+conda activate teleop
+python zed_to_ros_no_wrist.py
+
+# optionally, run following to launch with wrist images
+python zed_to_ros.py
 ```
 
-## Dual Arm Flipped Controller
+---
 
-The `dual_arm_tele_flipped_controller.py` provides teleoperation with a **flipped control mapping** where controller sides are swapped:
-- **Left controller** controls the **right arm**
-- **Right controller** controls the **left arm**
+## 2.2 visualize zed images
 
-### ROS2 Topics
+### Required Components
 
-| Type | Topic | Purpose |
-|------|-------|---------|
-| Subscribe | `/teleop/left_tele_mode` | Enable/disable right arm control (Bool) |
-| Subscribe | `/teleop/right_tele_mode` | Enable/disable left arm control (Bool) |
-| Subscribe | `/teleop/left_ee_raw_pose` | Raw pose from left controller (PoseStamped) |
-| Subscribe | `/teleop/right_ee_raw_pose` | Raw pose from right controller (PoseStamped) |
-| Publish | `/motion_target/target_pose_arm_left` | Target pose for left arm (PoseStamped) |
-| Publish | `/motion_target/target_pose_arm_right` | Target pose for right arm (PoseStamped) |
+Before recording, ensure the following are running:
 
-### Position Offsets
-Controller poses are offset before being sent to the robot:
-- **Right arm**: `x+0.15m, y-0.05m, z+0.4m`
-- **Left arm**: `x+0.2m, y+0.0m, z+0.4m`
+- Robot (only for ROS2 setup, no controller needed so just start the robot don't need to run any scripts or commands)
+- ZED node
+- Manus node
+- Quest teleop node
 
-### Safety Features
-- **Position jump limit**: 20cm max between consecutive commands
-- **Orientation jump limit**: 45 degrees max rotation between commands
-- If either limit is exceeded, the node **shuts down immediately** to prevent dangerous movements
+---
 
-### Usage
+### Start Recording Script
+
+new terminal
+
 ```bash
-# Run the flipped controller
-python robot_control_ros2/dual_arm_tele_flipped_controller.py
+cd ~/r1pro_teleop/demo_record
+conda activate teleop
+source ~/manus_ws/install/setup.bash
 
-# Enable/disable arms via ROS2 topics
-ros2 topic pub /teleop/left_tele_mode std_msgs/Bool "data: true"   # Enable right arm
-ros2 topic pub /teleop/right_tele_mode std_msgs/Bool "data: true"  # Enable left arm
+python demo_record_wrist_new_usingpedal_tesollo_inspirehand_everything_single_arm.py 
 ```
 
-## Requirements
-- Python 3.10
-- ROS2 (Humble recommended)
-- OpenCV (< version 5)
-- NumPy
-- transforms3d
-- readchar
+Controls:
 
-## Notes
-- Recorded trajectories are stored in `robot_control_ros2/recorded_trajectories/`
-- Calibration data is stored in `camera_calibration_ros2/camera_cali/`
-- Make sure ROS2 workspace is sourced before running scripts
+- `*` → Start recording
+- `*` → Stop recording
+
+## 2.3 Keyboard Control (Manual Arm + Torso Control)
+
+new terminal
+
+```bash
+cd ~/r1pro_control/robot_control_ros2
+conda activate robot_control
+python key_torso_ros2_no_hand.py
+```
+
+- Follow terminal instructions for keyboard control
+- Used for manual control
+
+## 2.4 Start Manus Glove Node (Hand Teleoperation / Data Collection)
+
+new terminal:
+
+```
+cd ~/manus_ws
+source install/setup.bash
+ros2 run manus_ros2 manus_data_publisher
+```
+
+new terminal
+
+```bash
+conda activate manus
+source ~/manus_ws/install/setup.bash
+
+cd ~/r1pro_control/manus_control
+
+python manus_control_left_inspire_hand.py   # Left hand
+python manus_control_right_inspire_hand.py  # Right hand
+```
+
+### ⚠️ Troubleshooting (Wrong Hand Mapping)
+
+If glove controls the wrong hand, modify:
+
+```python
+'/manus_glove_0'  ↔ '/manus_glove_1'
+```
+
+Inside:
+
+```python
+self.glove_subscriber = self.create_subscription(
+    ManusGlove,
+    '/manus_glove_0',
+    self.glove_callback,
+    10
+)
+```
+
+---
+
+## 2.5 Start Quest Teleoperation Node (Controller Pose → Robot Frame)
+
+### Step 1: Start ngrok
+
+new terminal
+
+```bash
+ngrok http --domain=aria-stream.ngrok.app 8012
+```
+
+- Open Quest browser
+- Refresh page
+- Press enter to start tracking
+
+---
+
+### Step 2: Start Teleop Node
+
+new terminal
+
+```bash
+cd ~/r1pro_teleop/teleop
+conda activate teleop
+
+python teleop_flipped_controller_with_torso.py
+```
+
+- End-effector (EE) pose will start publishing
+
+## 2.6 Pedal control
+
+new terminal
+
+```
+conda activate teleop
+cd ~/r1pro_teleop/teleop
+
+python pedal_control_ros
+```
+
+
+
+## 2.6 Start Robot Control Node: Note this will start publishing commands to robot!
+
+new terminal
+
+```
+cd ~/r1pro_control/robot_control_ros2
+conda activate robot_control
+
+python dual_arm_tele_flipped_controller.py
+```
+
